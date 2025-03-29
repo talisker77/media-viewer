@@ -104,10 +104,7 @@ class MediaService {
             const ext = path.extname(filePath).toLowerCase().slice(1);
             
             if (this.isAllowedFileType(ext)) {
-                if (ext === 'json') {
-                    return false;
-                }
-                return {
+                const fileInfo = {
                     path: filePath,
                     name: path.basename(filePath),
                     type: this.getFileType(ext),
@@ -116,6 +113,29 @@ class MediaService {
                     created: stats.birthtime,
                     directory: path.dirname(filePath)
                 };
+
+                // Look for associated metadata JSON file with the correct pattern
+                const metadataPath = `${filePath}.supplemental-metadata.json`;
+                try {
+                    const jsonData = await fs.readFile(metadataPath, 'utf8');
+                    const metadata = JSON.parse(jsonData);
+                    
+                    // Add relevant metadata to fileInfo
+                    fileInfo.metadata = {
+                        title: metadata.title,
+                        description: metadata.description,
+                        imageViews: metadata.imageViews,
+                        creationTime: metadata.creationTime,
+                        photoTakenTime: metadata.photoTakenTime,
+                        geoData: metadata.geoData,
+                        deviceType: metadata.googlePhotosOrigin?.mobileUpload?.deviceType
+                    };
+                } catch (error) {
+                    // If JSON file doesn't exist or is invalid, continue without metadata
+                    console.log(`No metadata found for ${filePath}`);
+                }
+
+                return fileInfo;
             }
             return null;
         } catch (error) {

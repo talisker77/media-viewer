@@ -122,6 +122,21 @@ router.get('/', async (req, res) => {
                         color: white;
                         margin-right: 15px;
                     }
+                    .metadata {
+                        font-size: 0.8em;
+                        color: #666;
+                        margin-top: 5px;
+                    }
+                    .metadata-item {
+                        margin-right: 15px;
+                    }
+                    .geo-data {
+                        color: #0066cc;
+                    }
+                    .device-info {
+                        color: #666;
+                        font-style: italic;
+                    }
                 </style>
             </head>
             <body>
@@ -148,11 +163,33 @@ router.get('/', async (req, res) => {
                                         <a href="/media/${encodeURIComponent(file.path)}" 
                                            class="file-link" 
                                            target="_blank">
-                                            ${file.name}
+                                            ${file.metadata?.title || file.name}
                                         </a>
                                         <div class="file-info">
                                             ${path.basename(file.directory)}
                                         </div>
+                                        ${file.metadata ? `
+                                            <div class="metadata">
+                                                ${file.metadata.description ? `
+                                                    <div class="metadata-item">${file.metadata.description}</div>
+                                                ` : ''}
+                                                ${file.metadata.photoTakenTime ? `
+                                                    <div class="metadata-item">
+                                                        Taken: ${file.metadata.photoTakenTime.formatted}
+                                                    </div>
+                                                ` : ''}
+                                                ${file.metadata.geoData ? `
+                                                    <div class="metadata-item geo-data">
+                                                        📍 ${file.metadata.geoData.latitude.toFixed(6)}, ${file.metadata.geoData.longitude.toFixed(6)}
+                                                    </div>
+                                                ` : ''}
+                                                ${file.metadata.deviceType ? `
+                                                    <div class="metadata-item device-info">
+                                                        📱 ${file.metadata.deviceType}
+                                                    </div>
+                                                ` : ''}
+                                            </div>
+                                        ` : ''}
                                     </div>
                                 </div>
                                 <div class="file-date">
@@ -176,11 +213,33 @@ router.get('/', async (req, res) => {
                                         <a href="/media/${encodeURIComponent(file.path)}" 
                                            class="file-link" 
                                            target="_blank">
-                                            ${file.name}
+                                            ${file.metadata?.title || file.name}
                                         </a>
                                         <div class="file-info">
                                             ${path.basename(file.directory)}
                                         </div>
+                                        ${file.metadata ? `
+                                            <div class="metadata">
+                                                ${file.metadata.description ? `
+                                                    <div class="metadata-item">${file.metadata.description}</div>
+                                                ` : ''}
+                                                ${file.metadata.photoTakenTime ? `
+                                                    <div class="metadata-item">
+                                                        Taken: ${file.metadata.photoTakenTime.formatted}
+                                                    </div>
+                                                ` : ''}
+                                                ${file.metadata.geoData ? `
+                                                    <div class="metadata-item geo-data">
+                                                        📍 ${file.metadata.geoData.latitude.toFixed(6)}, ${file.metadata.geoData.longitude.toFixed(6)}
+                                                    </div>
+                                                ` : ''}
+                                                ${file.metadata.deviceType ? `
+                                                    <div class="metadata-item device-info">
+                                                        📱 ${file.metadata.deviceType}
+                                                    </div>
+                                                ` : ''}
+                                            </div>
+                                        ` : ''}
                                     </div>
                                 </div>
                                 <div class="file-date">
