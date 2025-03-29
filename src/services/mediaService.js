@@ -104,6 +104,9 @@ class MediaService {
             const ext = path.extname(filePath).toLowerCase().slice(1);
             
             if (this.isAllowedFileType(ext)) {
+                if (ext === 'json') {
+                    return false;
+                }
                 return {
                     path: filePath,
                     name: path.basename(filePath),
