@@ -8,6 +8,11 @@ class MediaService {
     constructor() {
         this.mediaCache = new Map();
         this.watchers = [];
+        this.metadataStats = {
+            total: 0,
+            found: 0,
+            errors: 0
+        };
         this.initialize();
     }
 
@@ -26,7 +31,34 @@ class MediaService {
             }
         }
         await this.saveToDatabase();
-        console.log('Initial media scan completed');
+        
+        // Calculate statistics
+        const mediaFiles = Array.from(this.mediaCache.values());
+        const images = mediaFiles.filter(f => f.type === 'image');
+        const videos = mediaFiles.filter(f => f.type === 'video');
+        
+        console.log('\nMedia scan completed successfully:');
+        console.log(`Total files found: ${mediaFiles.length}`);
+        console.log(`Images: ${images.length}`);
+        console.log(`Videos: ${videos.length}`);
+        console.log(`Files with metadata: ${mediaFiles.filter(f => f.metadata).length}`);
+        console.log(`Files with location data: ${mediaFiles.filter(f => f.metadata?.geoData).length}`);
+        console.log('----------------------------------------');
+
+        // Log metadata scanning statistics
+        console.log('\nMetadata scanning summary:');
+        console.log(`Total files scanned for metadata: ${this.metadataStats.total}`);
+        console.log(`Files with metadata found: ${this.metadataStats.found}`);
+        console.log(`Files without metadata: ${this.metadataStats.total - this.metadataStats.found}`);
+        console.log(`Metadata scanning errors: ${this.metadataStats.errors}`);
+        console.log('----------------------------------------\n');
+
+        // Reset metadata stats for next scan
+        this.metadataStats = {
+            total: 0,
+            found: 0,
+            errors: 0
+        };
     }
 
     async scanDirectory(dir) {
@@ -104,6 +136,7 @@ class MediaService {
             const ext = path.extname(filePath).toLowerCase().slice(1);
             
             if (this.isAllowedFileType(ext)) {
+                this.metadataStats.total++;
                 const fileInfo = {
                     path: filePath,
                     name: path.basename(filePath),
@@ -130,16 +163,19 @@ class MediaService {
                         geoData: metadata.geoData,
                         deviceType: metadata.googlePhotosOrigin?.mobileUpload?.deviceType
                     };
+                    this.metadataStats.found++;
+                    console.log(`✓ Processed ${filePath} (with metadata)`);
                 } catch (error) {
                     // If JSON file doesn't exist or is invalid, continue without metadata
-                    console.log(`No metadata found for ${filePath}`);
+                    this.metadataStats.errors++;
+                    console.log(`! Processed ${filePath} (no metadata)`);
                 }
 
                 return fileInfo;
             }
             return null;
         } catch (error) {
-            console.error(`Error getting file info for ${filePath}:`, error);
+            console.error(`✗ Error processing ${filePath}:`, error);
             return null;
         }
     }
