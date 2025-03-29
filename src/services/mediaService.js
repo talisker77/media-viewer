@@ -17,8 +17,11 @@ class MediaService {
     }
 
     async initialize() {
+        console.log('\n=== Starting Media Service Initialization ===');
         await this.scanDirectories();
+        console.log('\n=== Directory Scanning Complete ===');
         this.initializeWatchers();
+        console.log('=== File Watchers Initialized ===\n');
     }
 
     async scanDirectories() {
@@ -30,7 +33,9 @@ class MediaService {
                 console.error(`Error scanning directory ${dir}:`, error);
             }
         }
+        console.log('\nSaving media files to database...');
         await this.saveToDatabase();
+        console.log('Database save complete');
         
         // Calculate statistics
         const mediaFiles = Array.from(this.mediaCache.values());
@@ -88,14 +93,17 @@ class MediaService {
     }
 
     async initializeWatchers() {
+        console.log('\nInitializing file watchers...');
         for (const dir of config.mediaDirectories) {
             try {
                 await fs.access(dir);
                 this.watchDirectory(dir);
+                console.log(`✓ Watching directory: ${dir}`);
             } catch (error) {
-                console.error(`Directory not accessible: ${dir}`, error);
+                console.error(`✗ Directory not accessible: ${dir}`, error);
             }
         }
+        console.log('File watchers initialization complete');
     }
 
     watchDirectory(dir) {
