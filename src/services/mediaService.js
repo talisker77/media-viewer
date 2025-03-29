@@ -1,13 +1,11 @@
 const fs = require('fs').promises;
 const path = require('path');
-const chokidar = require('chokidar');
 const config = require('../config/config');
 const databaseService = require('./databaseService');
 
 class MediaService {
     constructor() {
         this.mediaCache = new Map();
-        this.watchers = [];
         this.metadataStats = {
             total: 0,
             found: 0,
@@ -19,9 +17,7 @@ class MediaService {
     async initialize() {
         console.log('\n=== Starting Media Service Initialization ===');
         await this.scanDirectories();
-        console.log('\n=== Directory Scanning Complete ===');
-        this.initializeWatchers();
-        console.log('=== File Watchers Initialized ===\n');
+        console.log('\n=== Media Service Initialization Complete ===\n');
     }
 
     async scanDirectories() {
@@ -92,52 +88,6 @@ class MediaService {
         await databaseService.saveMediaFiles(mediaFiles);
     }
 
-    async initializeWatchers() {
-        console.log('\nInitializing file watchers...');
-        for (const dir of config.mediaDirectories) {
-            try {
-                await fs.access(dir);
-                this.watchDirectory(dir);
-                console.log(`✓ Watching directory: ${dir}`);
-            } catch (error) {
-                console.error(`✗ Directory not accessible: ${dir}`, error);
-            }
-        }
-        console.log('File watchers initialization complete');
-    }
-
-    watchDirectory(dir) {
-        const watcher = chokidar.watch(dir, {
-            ignored: /(^|[\/\\])\../, // ignore dotfiles
-            persistent: true,
-            ignoreInitial: false
-        });
-
-        watcher
-            .on('add', path => this.handleFileAdd(path))
-            .on('change', path => this.handleFileChange(path))
-            .on('unlink', path => this.handleFileDelete(path));
-
-        this.watchers.push(watcher);
-    }
-
-    async handleFileAdd(filePath) {
-        const fileInfo = await this.getFileInfo(filePath);
-        if (fileInfo) {
-            this.mediaCache.set(filePath, fileInfo);
-            await this.saveToDatabase();
-        }
-    }
-
-    async handleFileChange(filePath) {
-        await this.handleFileAdd(filePath);
-    }
-
-    async handleFileDelete(filePath) {
-        this.mediaCache.delete(filePath);
-        await this.saveToDatabase();
-    }
-
     async getFileInfo(filePath) {
         try {
             const stats = await fs.stat(filePath);
@@ -206,13 +156,6 @@ class MediaService {
     async getMediaByType(type) {
         return Array.from(this.mediaCache.values())
             .filter(media => media.type === type);
-    }
-
-    stopWatching() {
-        for (const watcher of this.watchers) {
-            watcher.close();
-        }
-        this.watchers = [];
     }
 }
 
