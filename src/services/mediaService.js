@@ -2,12 +2,57 @@ const fs = require('fs').promises;
 const path = require('path');
 const chokidar = require('chokidar');
 const config = require('../config/config');
+const databaseService = require('./databaseService');
 
 class MediaService {
     constructor() {
         this.mediaCache = new Map();
         this.watchers = [];
+        this.initialize();
+    }
+
+    async initialize() {
+        await this.scanDirectories();
         this.initializeWatchers();
+    }
+
+    async scanDirectories() {
+        console.log('Starting initial media scan...');
+        for (const dir of config.mediaDirectories) {
+            try {
+                await this.scanDirectory(dir);
+            } catch (error) {
+                console.error(`Error scanning directory ${dir}:`, error);
+            }
+        }
+        await this.saveToDatabase();
+        console.log('Initial media scan completed');
+    }
+
+    async scanDirectory(dir) {
+        try {
+            const files = await fs.readdir(dir, { withFileTypes: true });
+            
+            for (const file of files) {
+                const fullPath = path.join(dir, file.name);
+                
+                if (file.isDirectory()) {
+                    await this.scanDirectory(fullPath);
+                } else {
+                    const fileInfo = await this.getFileInfo(fullPath);
+                    if (fileInfo) {
+                        this.mediaCache.set(fullPath, fileInfo);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error(`Error scanning directory ${dir}:`, error);
+        }
+    }
+
+    async saveToDatabase() {
+        const mediaFiles = Array.from(this.mediaCache.values());
+        await databaseService.saveMediaFiles(mediaFiles);
     }
 
     async initializeWatchers() {
@@ -40,6 +85,7 @@ class MediaService {
         const fileInfo = await this.getFileInfo(filePath);
         if (fileInfo) {
             this.mediaCache.set(filePath, fileInfo);
+            await this.saveToDatabase();
         }
     }
 
@@ -47,8 +93,9 @@ class MediaService {
         await this.handleFileAdd(filePath);
     }
 
-    handleFileDelete(filePath) {
+    async handleFileDelete(filePath) {
         this.mediaCache.delete(filePath);
+        await this.saveToDatabase();
     }
 
     async getFileInfo(filePath) {
@@ -63,7 +110,8 @@ class MediaService {
                     type: this.getFileType(ext),
                     size: stats.size,
                     modified: stats.mtime,
-                    created: stats.birthtime
+                    created: stats.birthtime,
+                    directory: path.dirname(filePath)
                 };
             }
             return null;

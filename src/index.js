@@ -4,6 +4,8 @@ const compression = require('compression');
 const helmet = require('helmet');
 const path = require('path');
 const config = require('./config/config');
+const mediaRoutes = require('./routes/mediaRoutes');
+const indexRoutes = require('./routes/index');
 
 // Initialize express app
 const app = express();
@@ -22,6 +24,10 @@ if (config.corsEnabled) {
         allowedHeaders: ['Content-Type', 'Authorization']
     }));
 }
+
+// Routes
+app.use('/', indexRoutes);
+app.use('/api/media', mediaRoutes);
 
 // Basic health check route
 app.get('/health', (req, res) => {
