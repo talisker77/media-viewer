@@ -5,6 +5,7 @@ let filters = {};
 let currentMediaIndex = 0;
 let mediaItems = [];
 let keyboardShortcutsTimeout;
+let currentMediaElement = null;
 
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 Bytes';
@@ -15,7 +16,30 @@ function formatFileSize(bytes) {
 }
 
 function formatDate(timestamp) {
-    return new Date(timestamp).toLocaleString();
+    if (!timestamp || isNaN(timestamp)) {
+        console.warn('Invalid date timestamp:', timestamp);
+        return 'Unknown date';
+    }
+    
+    try {
+        const date = new Date(timestamp);
+        if (isNaN(date.getTime())) {
+            console.warn('Invalid date object:', date);
+            return 'Unknown date';
+        }
+        
+        return date.toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+    } catch (error) {
+        console.error('Error formatting date:', error);
+        return 'Unknown date';
+    }
 }
 
 function createMediaItem(item) {
@@ -26,15 +50,13 @@ function createMediaItem(item) {
     mediaItem.dataset.size = item.size;
     mediaItem.dataset.hasLocation = item.hasLocation;
 
-    // Get the folder name from the path
-    const pathParts = item.path.split('/');
-    // Get the second-to-last part of the path (the folder name)
-    const folderName = pathParts.length > 1 ? pathParts[pathParts.length - 2] : 'Root';
+    // Use the folder information from the server
+    const folderName = item.folder || 'Root';
     
     mediaItem.innerHTML = `
         <div class="media-info">
             <div class="media-name" data-path="${item.path}">${item.name}</div>
-            <div class="media-folder">${folderName}</div>
+            <div class="media-folder" title="${item.directory}">${folderName}</div>
             <div class="media-meta">
                 <span class="media-date">${formatDate(item.date)}</span>
                 <span class="media-size">${formatFileSize(item.size)}</span>
@@ -102,35 +124,41 @@ function showMediaViewer(item) {
     // Update UI
     modalTitle.textContent = item.name;
     modalMeta.innerHTML = `
-        ${item.directory} • ${formatFileSize(item.size)} • ${formatDate(item.date)}
+        ${item.folder} • ${formatFileSize(item.size)} • ${formatDate(item.date)}
         ${item.hasLocation ? ' • 📍' : ''}
     `;
     
-    // Show loading spinner
-    loadingSpinner.style.display = 'block';
+    // Clear container and show loading spinner
     mediaContainer.innerHTML = '';
+    loadingSpinner.style.display = 'block';
     
-    // Create media element
-    const mediaElement = item.type === 'image' 
+    // Clean up previous media element if it exists
+    if (currentMediaElement) {
+        currentMediaElement.remove();
+        currentMediaElement = null;
+    }
+    
+    // Create new media element
+    currentMediaElement = item.type === 'image' 
         ? document.createElement('img')
         : document.createElement('video');
     
-    mediaElement.className = `media-viewer ${item.type}`;
+    currentMediaElement.className = `media-viewer ${item.type}`;
     if (item.type === 'video') {
-        mediaElement.controls = true;
+        currentMediaElement.controls = true;
     }
     
     // Load media
     const mediaUrl = `/media/${encodeURIComponent(item.path)}`;
     console.log('Loading media from URL:', mediaUrl);
     
-    mediaElement.onload = () => {
+    currentMediaElement.onload = () => {
         console.log('Media loaded successfully');
         loadingSpinner.style.display = 'none';
-        mediaContainer.appendChild(mediaElement);
+        mediaContainer.appendChild(currentMediaElement);
     };
 
-    mediaElement.onerror = (error) => {
+    currentMediaElement.onerror = (error) => {
         console.error('Error loading media:', error);
         loadingSpinner.style.display = 'none';
         mediaContainer.innerHTML = `
@@ -142,7 +170,7 @@ function showMediaViewer(item) {
         `;
     };
     
-    mediaElement.src = mediaUrl;
+    currentMediaElement.src = mediaUrl;
     
     // Show modal
     modal.style.display = 'block';
@@ -180,6 +208,13 @@ function closeMediaViewer() {
     if (modal) {
         modal.style.display = 'none';
         document.body.style.overflow = '';
+        
+        // Clean up media element
+        if (currentMediaElement) {
+            currentMediaElement.remove();
+            currentMediaElement = null;
+        }
+        
         const mediaContainer = document.getElementById('mediaContainer');
         mediaContainer.innerHTML = '';
     }

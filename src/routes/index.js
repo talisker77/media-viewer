@@ -211,11 +211,23 @@ router.get('/api/media', async (req, res) => {
         const endIndex = startIndex + itemsPerPage;
         const paginatedItems = items.slice(startIndex, endIndex);
 
-        // Add folder information to each item
-        const itemsWithFolder = paginatedItems.map(item => ({
-            ...item,
-            folder: item.path.split('/').slice(-2, -1)[0] || 'Root'
-        }));
+        // Add folder information to each item and ensure date is a valid timestamp
+        const itemsWithFolder = paginatedItems.map(item => {
+            // Get the directory path (everything except the filename)
+            const dirPath = path.dirname(item.path);
+            // Get the last directory name
+            const folderName = path.basename(dirPath);
+            
+            // Ensure date is a valid timestamp
+            const date = new Date(item.date).getTime();
+            
+            return {
+                ...item,
+                folder: folderName || 'Root',
+                directory: dirPath,
+                date: date // Use timestamp instead of Date object
+            };
+        });
 
         console.log('Sending response:', {
             totalItems,
