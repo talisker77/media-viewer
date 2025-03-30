@@ -1,12 +1,13 @@
-const fs = require('fs').promises;
+const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs = require('fs').promises;
 const config = require('../config/config');
 
 class DatabaseService {
     constructor() {
         this.dbPath = path.join(__dirname, '../../data/media.db');
+        this.db = null;
         this.ensureDataDirectory();
-        this.chunkSize = 100; // Number of items per chunk
     }
 
     async ensureDataDirectory() {
@@ -18,136 +19,260 @@ class DatabaseService {
         }
     }
 
-    async saveMediaFiles(mediaFiles) {
-        try {
-            // Save in chunks to handle large datasets
-            const chunks = this.chunkArray(mediaFiles, this.chunkSize);
-            for (let i = 0; i < chunks.length; i++) {
-                const chunkPath = `${this.dbPath}.${i}`;
-                await fs.writeFile(chunkPath, JSON.stringify(chunks[i], null, 2));
-            }
-            // Save metadata about chunks
-            await fs.writeFile(
-                `${this.dbPath}.meta`,
-                JSON.stringify({
-                    totalItems: mediaFiles.length,
-                    totalChunks: chunks.length,
-                    chunkSize: this.chunkSize
-                })
-            );
-            return true;
-        } catch (error) {
-            console.error('Error saving media database:', error);
-            return false;
-        }
-    }
-
-    async loadMediaFiles(page = 1, itemsPerPage = 20, filters = {}) {
-        try {
-            // Read metadata first
-            const metaData = JSON.parse(await fs.readFile(`${this.dbPath}.meta`, 'utf8'));
-            
-            // Calculate which chunks we need
-            const startIndex = (page - 1) * itemsPerPage;
-            const endIndex = startIndex + itemsPerPage;
-            const startChunk = Math.floor(startIndex / this.chunkSize);
-            const endChunk = Math.ceil(endIndex / this.chunkSize);
-
-            // Load required chunks
-            const items = [];
-            for (let i = startChunk; i <= endChunk; i++) {
-                const chunkPath = `${this.dbPath}.${i}`;
-                try {
-                    const chunkData = JSON.parse(await fs.readFile(chunkPath, 'utf8'));
-                    items.push(...chunkData);
-                } catch (error) {
-                    console.error(`Error reading chunk ${i}:`, error);
+    async initialize() {
+        return new Promise((resolve, reject) => {
+            this.db = new sqlite3.Database(this.dbPath, (err) => {
+                if (err) {
+                    reject(err);
+                    return;
                 }
-            }
-
-            // Apply filters
-            let filteredItems = this.applyFilters(items, filters);
-
-            // Slice the items to get the requested page
-            const start = startIndex % this.chunkSize;
-            const end = start + itemsPerPage;
-            const pageItems = filteredItems.slice(start, end);
-
-            return {
-                items: pageItems,
-                totalItems: filteredItems.length,
-                totalPages: Math.ceil(filteredItems.length / itemsPerPage),
-                currentPage: page,
-                itemsPerPage
-            };
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                return {
-                    items: [],
-                    totalItems: 0,
-                    totalPages: 0,
-                    currentPage: 1,
-                    itemsPerPage
-                };
-            }
-            console.error('Error loading media database:', error);
-            throw error;
-        }
-    }
-
-    applyFilters(items, filters) {
-        return items.filter(item => {
-            // Search filter
-            if (filters.search) {
-                const searchTerm = filters.search.toLowerCase();
-                const searchableFields = [
-                    item.name,
-                    item.metadata?.title,
-                    item.metadata?.description,
-                    path.basename(item.directory)
-                ].filter(Boolean);
-                
-                if (!searchableFields.some(field => 
-                    field.toLowerCase().includes(searchTerm)
-                )) {
-                    return false;
-                }
-            }
-
-            // Date range filter
-            if (filters.dateFrom || filters.dateTo) {
-                const itemDate = item.metadata?.photoTakenTime?.timestamp 
-                    ? new Date(parseInt(item.metadata.photoTakenTime.timestamp) * 1000)
-                    : new Date(item.modified);
-
-                if (filters.dateFrom && itemDate < new Date(filters.dateFrom)) {
-                    return false;
-                }
-                if (filters.dateTo && itemDate > new Date(filters.dateTo)) {
-                    return false;
-                }
-            }
-
-            // Type filter
-            if (filters.type && item.type !== filters.type) {
-                return false;
-            }
-
-            // Location filter
-            if (filters.hasLocation && (!item.metadata?.geoData?.latitude || !item.metadata?.geoData?.longitude)) {
-                return false;
-            }
-
-            return true;
+                this.createTables().then(resolve).catch(reject);
+            });
         });
     }
 
-    chunkArray(array, size) {
-        const chunks = [];
-        for (let i = 0; i < array.length; i += size) {
-            chunks.push(array.slice(i, i + size));
+    async createTables() {
+        return new Promise((resolve, reject) => {
+            this.db.run(`
+                CREATE TABLE IF NOT EXISTS media_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    directory TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    modified INTEGER NOT NULL,
+                    created INTEGER NOT NULL,
+                    metadata TEXT,
+                    created_at INTEGER DEFAULT (unixepoch())
+                )
+            `, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    }
+
+    async saveMediaFiles(mediaFiles) {
+        return new Promise((resolve, reject) => {
+            this.db.serialize(() => {
+                this.db.run('BEGIN TRANSACTION');
+
+                const stmt = this.db.prepare(`
+                    INSERT OR REPLACE INTO media_files 
+                    (path, name, type, directory, size, modified, created, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                `);
+
+                mediaFiles.forEach(file => {
+                    stmt.run(
+                        file.path,
+                        file.name,
+                        file.type,
+                        file.directory,
+                        file.size,
+                        file.modified,
+                        file.created,
+                        JSON.stringify(file.metadata || {})
+                    );
+                });
+
+                stmt.finalize();
+
+                this.db.run('COMMIT', (err) => {
+                    if (err) reject(err);
+                    else resolve(true);
+                });
+            });
+        });
+    }
+
+    async loadMediaFiles(page = 1, itemsPerPage = 20, filters = {}) {
+        const offset = (page - 1) * itemsPerPage;
+        let query = 'SELECT * FROM media_files WHERE 1=1';
+        const params = [];
+
+        // Apply filters
+        if (filters.search) {
+            query += ` AND (
+                name LIKE ? OR 
+                directory LIKE ? OR 
+                metadata LIKE ?
+            )`;
+            const searchTerm = `%${filters.search}%`;
+            params.push(searchTerm, searchTerm, searchTerm);
         }
-        return chunks;
+
+        if (filters.type) {
+            query += ' AND type = ?';
+            params.push(filters.type);
+        }
+
+        if (filters.dateFrom) {
+            query += ' AND modified >= ?';
+            params.push(new Date(filters.dateFrom).getTime());
+        }
+
+        if (filters.dateTo) {
+            query += ' AND modified <= ?';
+            params.push(new Date(filters.dateTo).getTime());
+        }
+
+        if (filters.hasLocation) {
+            query += ' AND metadata LIKE ?';
+            params.push('%"geoData":%');
+        }
+
+        // Get total count
+        const countQuery = `SELECT COUNT(*) as total FROM (${query})`;
+        const total = await new Promise((resolve, reject) => {
+            this.db.get(countQuery, params, (err, row) => {
+                if (err) reject(err);
+                else resolve(row.total);
+            });
+        });
+
+        // Get paginated results
+        query += ' ORDER BY modified DESC LIMIT ? OFFSET ?';
+        params.push(itemsPerPage, offset);
+
+        const items = await new Promise((resolve, reject) => {
+            this.db.all(query, params, (err, rows) => {
+                if (err) reject(err);
+                else {
+                    resolve(rows.map(row => ({
+                        ...row,
+                        metadata: JSON.parse(row.metadata || '{}')
+                    })));
+                }
+            });
+        });
+
+        return {
+            items,
+            totalItems: total,
+            totalPages: Math.ceil(total / itemsPerPage),
+            currentPage: page,
+            itemsPerPage
+        };
+    }
+
+    async deleteDatabase() {
+        return new Promise((resolve, reject) => {
+            if (this.db) {
+                this.db.close((err) => {
+                    if (err) reject(err);
+                    else {
+                        fs.unlink(this.dbPath)
+                            .then(resolve)
+                            .catch(reject);
+                    }
+                });
+            } else {
+                resolve();
+            }
+        });
+    }
+
+    async getMediaOverview() {
+        return new Promise((resolve, reject) => {
+            this.db.serialize(() => {
+                const overview = {
+                    totalItems: 0,
+                    byType: {},
+                    byDirectory: {},
+                    recentItems: [],
+                    stats: {
+                        totalSize: 0,
+                        averageFileSize: 0,
+                        oldestFile: null,
+                        newestFile: null
+                    }
+                };
+
+                // Get total items and size
+                this.db.get(`
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(size) as totalSize,
+                        MIN(modified) as oldestFile,
+                        MAX(modified) as newestFile
+                    FROM media_files
+                `, (err, row) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    overview.totalItems = row.total;
+                    overview.stats.totalSize = row.totalSize || 0;
+                    overview.stats.averageFileSize = row.total ? Math.round(row.totalSize / row.total) : 0;
+                    overview.stats.oldestFile = row.oldestFile;
+                    overview.stats.newestFile = row.newestFile;
+                });
+
+                // Get items by type
+                this.db.all(`
+                    SELECT type, COUNT(*) as count
+                    FROM media_files
+                    GROUP BY type
+                `, (err, rows) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    rows.forEach(row => {
+                        overview.byType[row.type] = row.count;
+                    });
+                });
+
+                // Get items by directory
+                this.db.all(`
+                    SELECT directory, COUNT(*) as count
+                    FROM media_files
+                    GROUP BY directory
+                    ORDER BY count DESC
+                    LIMIT 10
+                `, (err, rows) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    rows.forEach(row => {
+                        overview.byDirectory[row.directory] = row.count;
+                    });
+                });
+
+                // Get recent items
+                this.db.all(`
+                    SELECT id, name, type, directory, modified, metadata
+                    FROM media_files
+                    ORDER BY modified DESC
+                    LIMIT 10
+                `, (err, rows) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    overview.recentItems = rows.map(row => ({
+                        id: row.id,
+                        name: row.name,
+                        type: row.type,
+                        directory: row.directory,
+                        modified: row.modified,
+                        metadata: JSON.parse(row.metadata || '{}')
+                    }));
+                });
+
+                // Wait for all queries to complete
+                this.db.run('SELECT 1', (err) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve(overview);
+                });
+            });
+        });
     }
 }
 

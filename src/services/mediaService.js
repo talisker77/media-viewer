@@ -16,8 +16,14 @@ class MediaService {
 
     async initialize() {
         console.log('\n=== Starting Media Service Initialization ===');
-        await this.scanDirectories();
-        console.log('\n=== Media Service Initialization Complete ===\n');
+        try {
+            await databaseService.initialize();
+            await this.scanDirectories();
+            console.log('\n=== Media Service Initialization Complete ===\n');
+        } catch (error) {
+            console.error('Error during initialization:', error);
+            throw error;
+        }
     }
 
     async scanDirectories() {

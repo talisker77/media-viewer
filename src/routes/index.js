@@ -4,22 +4,54 @@ const mediaService = require('../services/mediaService');
 const databaseService = require('../services/databaseService');
 const path = require('path');
 const config = require('../config/config');
+const crypto = require('crypto');
+const fs = require('fs');
+
+// Generate a random nonce for CSP
+function generateNonce() {
+    return crypto.randomBytes(16).toString('base64');
+}
 
 // Route to serve media files
 router.get('/media/:filePath(*)', async (req, res) => {
+    const requestId = crypto.randomBytes(8).toString('hex');
+    console.log(`[${requestId}] Starting media file request`);
+    
     try {
         const filePath = decodeURIComponent(req.params.filePath);
+        console.log(`[${requestId}] Requested media file:`, filePath);
+
+        // Validate file path
+        if (!filePath || filePath.trim() === '') {
+            console.error(`[${requestId}] Invalid file path provided`);
+            return res.status(400).json({
+                error: 'Invalid file path',
+                requestId
+            });
+        }
+
+        // First check if the file exists in our database
+        console.log(`[${requestId}] Loading media files from database`);
         const mediaData = await databaseService.loadMediaFiles();
         const file = mediaData.items.find(f => f.path === filePath);
 
         if (!file) {
+            console.error(`[${requestId}] File not found in database:`, filePath);
             return res.status(404).json({
-                error: 'File not found'
+                error: 'File not found in database',
+                requestId
             });
         }
 
+        console.log(`[${requestId}] Found file in database:`, {
+            name: file.name,
+            type: file.type,
+            size: file.size
+        });
+
         // Ensure we're using an absolute path
         const absolutePath = path.resolve(file.path);
+        console.log(`[${requestId}] Resolved absolute path:`, absolutePath);
         
         // Basic security check to ensure the file is within allowed directories
         const isAllowedPath = config.mediaDirectories.some(dir => 
@@ -27,16 +59,181 @@ router.get('/media/:filePath(*)', async (req, res) => {
         );
 
         if (!isAllowedPath) {
+            console.error(`[${requestId}] Access denied - File outside allowed directories:`, {
+                path: absolutePath,
+                allowedDirs: config.mediaDirectories
+            });
             return res.status(403).json({
-                error: 'Access denied'
+                error: 'Access denied - File outside allowed directories',
+                requestId
             });
         }
 
-        res.sendFile(absolutePath);
+        // Check if file exists on disk
+        try {
+            console.log(`[${requestId}] Checking file existence on disk`);
+            await fs.promises.access(absolutePath);
+            console.log(`[${requestId}] File exists on disk, serving:`, absolutePath);
+            
+            // Get file stats for additional validation
+            const stats = await fs.promises.stat(absolutePath);
+            console.log(`[${requestId}] File stats:`, {
+                size: stats.size,
+                created: stats.birthtime,
+                modified: stats.mtime
+            });
+
+            // Validate file size matches database
+            if (stats.size !== file.size) {
+                console.warn(`[${requestId}] File size mismatch:`, {
+                    databaseSize: file.size,
+                    actualSize: stats.size
+                });
+            }
+            
+            // Set appropriate content type
+            const ext = path.extname(absolutePath).toLowerCase();
+            const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+                           ext === '.png' ? 'image/png' :
+                           ext === '.gif' ? 'image/gif' :
+                           ext === '.mp4' ? 'video/mp4' :
+                           ext === '.webm' ? 'video/webm' :
+                           'application/octet-stream';
+            
+            console.log(`[${requestId}] Setting content type:`, mimeType);
+            res.setHeader('Content-Type', mimeType);
+            
+            // Add cache control headers
+            res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+            res.setHeader('ETag', `"${stats.size}-${stats.mtime.getTime()}"`);
+            
+            // Stream the file with error handling
+            const fileStream = fs.createReadStream(absolutePath);
+            
+            fileStream.on('error', (error) => {
+                console.error(`[${requestId}] Error streaming file:`, error);
+                if (!res.headersSent) {
+                    res.status(500).json({
+                        error: 'Error streaming file',
+                        requestId
+                    });
+                }
+            });
+
+            fileStream.pipe(res);
+            
+            // Handle client disconnect
+            req.on('close', () => {
+                console.log(`[${requestId}] Client disconnected, cleaning up`);
+                fileStream.destroy();
+            });
+
+        } catch (error) {
+            console.error(`[${requestId}] File not found on disk:`, {
+                path: absolutePath,
+                error: error.message,
+                code: error.code
+            });
+            return res.status(404).json({
+                error: 'File not found on disk',
+                path: absolutePath,
+                requestId
+            });
+        }
     } catch (error) {
-        console.error('Error serving media file:', error);
+        console.error(`[${requestId}] Error serving media file:`, {
+            error: error.message,
+            stack: error.stack
+        });
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: 'Failed to serve media file',
+                message: error.message,
+                requestId
+            });
+        }
+    }
+});
+
+// API endpoint to get media items with pagination and filtering
+router.get('/api/media', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const itemsPerPage = parseInt(req.query.itemsPerPage) || 20;
+        const search = req.query.search || '';
+        const type = req.query.type || '';
+        const dateFrom = req.query.dateFrom ? new Date(req.query.dateFrom) : null;
+        const dateTo = req.query.dateTo ? new Date(req.query.dateTo) : null;
+        const hasLocation = req.query.hasLocation === 'true';
+
+        console.log('API request received:', {
+            page,
+            itemsPerPage,
+            search,
+            type,
+            dateFrom,
+            dateTo,
+            hasLocation
+        });
+
+        const mediaData = await databaseService.loadMediaFiles();
+        let items = mediaData.items;
+
+        // Apply filters
+        if (search) {
+            const searchLower = search.toLowerCase();
+            items = items.filter(item => 
+                item.name.toLowerCase().includes(searchLower) ||
+                item.path.toLowerCase().includes(searchLower)
+            );
+        }
+
+        if (type) {
+            items = items.filter(item => item.type === type);
+        }
+
+        if (dateFrom) {
+            items = items.filter(item => new Date(item.date) >= dateFrom);
+        }
+
+        if (dateTo) {
+            items = items.filter(item => new Date(item.date) <= dateTo);
+        }
+
+        if (hasLocation) {
+            items = items.filter(item => item.hasLocation);
+        }
+
+        // Calculate pagination
+        const totalItems = items.length;
+        const totalPages = Math.ceil(totalItems / itemsPerPage);
+        const startIndex = (page - 1) * itemsPerPage;
+        const endIndex = startIndex + itemsPerPage;
+        const paginatedItems = items.slice(startIndex, endIndex);
+
+        // Add folder information to each item
+        const itemsWithFolder = paginatedItems.map(item => ({
+            ...item,
+            folder: item.path.split('/').slice(-2, -1)[0] || 'Root'
+        }));
+
+        console.log('Sending response:', {
+            totalItems,
+            currentPage: page,
+            totalPages,
+            itemsCount: itemsWithFolder.length
+        });
+
+        res.json({
+            totalItems,
+            currentPage: page,
+            totalPages,
+            items: itemsWithFolder
+        });
+    } catch (error) {
+        console.error('Error in /api/media:', error);
         res.status(500).json({
-            error: 'Failed to serve media file',
+            error: 'Failed to fetch media items',
             message: error.message
         });
     }
@@ -44,31 +241,22 @@ router.get('/media/:filePath(*)', async (req, res) => {
 
 router.get('/', async (req, res) => {
     try {
-        const page = parseInt(req.query.page) || 1;
-        const itemsPerPage = parseInt(req.query.itemsPerPage) || 20;
-        const filters = {
-            search: req.query.search,
-            dateFrom: req.query.dateFrom,
-            dateTo: req.query.dateTo,
-            type: req.query.type,
-            hasLocation: req.query.hasLocation === 'true'
-        };
+        const overview = await databaseService.getMediaOverview();
         
-        const mediaData = await databaseService.loadMediaFiles(page, itemsPerPage, filters);
-        
-        // Group files by type
-        const groupedFiles = {
-            images: mediaData.items.filter(file => file.type === 'image'),
-            videos: mediaData.items.filter(file => file.type === 'video')
-        };
+        // Format dates for display
+        if (overview.stats.oldestFile) {
+            overview.stats.oldestFile = new Date(overview.stats.oldestFile).toISOString();
+        }
+        if (overview.stats.newestFile) {
+            overview.stats.newestFile = new Date(overview.stats.newestFile).toISOString();
+        }
 
-        // Generate pagination controls
-        const paginationControls = generatePaginationControls(
-            mediaData.currentPage,
-            mediaData.totalPages,
-            itemsPerPage,
-            filters
-        );
+        // Format file sizes
+        overview.stats.totalSizeFormatted = formatFileSize(overview.stats.totalSize);
+        overview.stats.averageFileSizeFormatted = formatFileSize(overview.stats.averageFileSize);
+
+        // Generate nonce for CSP
+        const nonce = generateNonce();
 
         // Generate HTML response
         const html = `
@@ -76,497 +264,85 @@ router.get('/', async (req, res) => {
             <html>
             <head>
                 <title>Media Viewer</title>
-                <style>
-                    body {
-                        font-family: Arial, sans-serif;
-                        max-width: 1200px;
-                        margin: 0 auto;
-                        padding: 20px;
-                    }
-                    .section {
-                        margin-bottom: 30px;
-                    }
-                    h1, h2 {
-                        color: #333;
-                    }
-                    .file-list {
-                        list-style: none;
-                        padding: 0;
-                    }
-                    .file-item {
-                        padding: 10px;
-                        border-bottom: 1px solid #eee;
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                    }
-                    .file-item:hover {
-                        background-color: #f5f5f5;
-                    }
-                    .file-info {
-                        color: #666;
-                        font-size: 0.9em;
-                    }
-                    .stats {
-                        background-color: #f8f9fa;
-                        padding: 15px;
-                        border-radius: 5px;
-                        margin-bottom: 20px;
-                    }
-                    .file-link {
-                        color: #0066cc;
-                        text-decoration: none;
-                        font-weight: bold;
-                    }
-                    .file-link:hover {
-                        text-decoration: underline;
-                    }
-                    .file-date {
-                        color: #666;
-                        font-size: 0.9em;
-                    }
-                    .file-preview {
-                        max-width: 200px;
-                        max-height: 150px;
-                        margin-right: 15px;
-                    }
-                    .video-preview {
-                        width: 200px;
-                        height: 150px;
-                        background-color: #000;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        color: white;
-                        margin-right: 15px;
-                    }
-                    .metadata {
-                        font-size: 0.8em;
-                        color: #666;
-                        margin-top: 5px;
-                    }
-                    .metadata-item {
-                        margin-right: 15px;
-                    }
-                    .geo-data {
-                        color: #0066cc;
-                    }
-                    .device-info {
-                        color: #666;
-                        font-style: italic;
-                    }
-                    .pagination {
-                        display: flex;
-                        justify-content: center;
-                        gap: 10px;
-                        margin: 20px 0;
-                    }
-                    .pagination a {
-                        padding: 8px 12px;
-                        border: 1px solid #ddd;
-                        border-radius: 4px;
-                        text-decoration: none;
-                        color: #0066cc;
-                    }
-                    .pagination a:hover {
-                        background-color: #f5f5f5;
-                    }
-                    .pagination .active {
-                        background-color: #0066cc;
-                        color: white;
-                        border-color: #0066cc;
-                    }
-                    .pagination .disabled {
-                        color: #ccc;
-                        pointer-events: none;
-                    }
-                    .page-info {
-                        text-align: center;
-                        color: #666;
-                        margin: 10px 0;
-                    }
-                    .filters {
-                        background-color: #f8f9fa;
-                        padding: 20px;
-                        border-radius: 5px;
-                        margin-bottom: 20px;
-                    }
-                    .filter-group {
-                        margin-bottom: 15px;
-                    }
-                    .filter-group label {
-                        display: block;
-                        margin-bottom: 5px;
-                        font-weight: bold;
-                    }
-                    .filter-group input,
-                    .filter-group select {
-                        width: 100%;
-                        padding: 8px;
-                        border: 1px solid #ddd;
-                        border-radius: 4px;
-                    }
-                    .filter-row {
-                        display: flex;
-                        gap: 15px;
-                        margin-bottom: 15px;
-                    }
-                    .filter-row > div {
-                        flex: 1;
-                    }
-                    .search-box {
-                        display: flex;
-                        gap: 10px;
-                    }
-                    .search-box input {
-                        flex: 1;
-                    }
-                    .search-box button {
-                        padding: 8px 16px;
-                        background-color: #0066cc;
-                        color: white;
-                        border: none;
-                        border-radius: 4px;
-                        cursor: pointer;
-                    }
-                    .search-box button:hover {
-                        background-color: #0052a3;
-                    }
-                    .active-filters {
-                        margin-top: 10px;
-                        display: flex;
-                        flex-wrap: wrap;
-                        gap: 8px;
-                    }
-                    .filter-tag {
-                        background-color: #e9ecef;
-                        padding: 4px 8px;
-                        border-radius: 4px;
-                        font-size: 0.9em;
-                        display: flex;
-                        align-items: center;
-                        gap: 5px;
-                    }
-                    .filter-tag button {
-                        background: none;
-                        border: none;
-                        color: #666;
-                        cursor: pointer;
-                        padding: 0 4px;
-                    }
-                    .filter-tag button:hover {
-                        color: #dc3545;
-                    }
-                </style>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <link rel="stylesheet" href="/css/media-viewer.css">
+                <meta http-equiv="Content-Security-Policy" content="
+                    default-src 'self';
+                    script-src 'self' 'nonce-${nonce}';
+                    style-src 'self' 'unsafe-inline';
+                    img-src 'self' data: blob:;
+                    media-src 'self' data: blob:;
+                    connect-src 'self';
+                    font-src 'self';
+                ">
             </head>
             <body>
-                <h1>Media Viewer</h1>
-                
-                <div class="filters">
-                    <form method="GET" action="/">
-                        <div class="search-box">
-                            <input type="text" 
-                                   name="search" 
-                                   placeholder="Search files..." 
-                                   value="${filters.search || ''}"
-                                   autocomplete="off">
-                            <button type="submit">Search</button>
-                        </div>
-                        
-                        <div class="filter-row">
-                            <div class="filter-group">
-                                <label>Type</label>
-                                <select name="type">
-                                    <option value="">All Types</option>
-                                    <option value="image" ${filters.type === 'image' ? 'selected' : ''}>Images</option>
-                                    <option value="video" ${filters.type === 'video' ? 'selected' : ''}>Videos</option>
-                                </select>
+                <div class="container">
+                    <div class="header">
+                        <h1>Media Viewer</h1>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <h3>Total Items</h3>
+                                <p>${overview.totalItems}</p>
                             </div>
-                            <div class="filter-group">
-                                <label>Date Range</label>
-                                <input type="date" 
-                                       name="dateFrom" 
-                                       value="${filters.dateFrom || ''}"
-                                       placeholder="From">
-                                <input type="date" 
-                                       name="dateTo" 
-                                       value="${filters.dateTo || ''}"
-                                       placeholder="To">
+                            <div class="stat-card">
+                                <h3>Total Storage</h3>
+                                <p>${overview.stats.totalSizeFormatted}</p>
+                            </div>
+                            <div class="stat-card">
+                                <h3>Average File Size</h3>
+                                <p>${overview.stats.averageFileSizeFormatted}</p>
+                            </div>
+                            <div class="stat-card">
+                                <h3>Date Range</h3>
+                                <p>${new Date(overview.stats.oldestFile).toLocaleDateString()} - ${new Date(overview.stats.newestFile).toLocaleDateString()}</p>
                             </div>
                         </div>
-                        
-                        <div class="filter-group">
-                            <label>
-                                <input type="checkbox" 
-                                       name="hasLocation" 
-                                       value="true"
-                                       ${filters.hasLocation ? 'checked' : ''}>
-                                Only show items with location data
-                            </label>
-                        </div>
-                        
-                        <button type="submit">Apply Filters</button>
-                    </form>
+                    </div>
 
-                    ${generateActiveFilters(filters)}
+                    <div class="filters">
+                        <input type="text" id="search" class="filter-input" placeholder="Search files...">
+                        <select id="type" class="filter-select">
+                            <option value="">All Types</option>
+                            <option value="image">Images</option>
+                            <option value="video">Videos</option>
+                        </select>
+                        <input type="date" id="dateFrom" class="filter-input">
+                        <input type="date" id="dateTo" class="filter-input">
+                        <label class="filter-checkbox">
+                            <input type="checkbox" id="hasLocation">
+                            With Location
+                        </label>
+                    </div>
+
+                    <div class="media-list" id="mediaList">
+                        <!-- Media items will be loaded here -->
+                    </div>
+                    <div class="loading" id="loading">Loading...</div>
                 </div>
 
-                <div class="stats">
-                    <h2>Statistics</h2>
-                    <p>Total Files: ${mediaData.totalItems}</p>
-                    <p>Images: ${groupedFiles.images.length}</p>
-                    <p>Videos: ${groupedFiles.videos.length}</p>
-                </div>
-
-                <div class="page-info">
-                    Page ${mediaData.currentPage} of ${mediaData.totalPages}
-                </div>
-
-                <div class="section">
-                    <h2>Images</h2>
-                    <ul class="file-list">
-                        ${groupedFiles.images.map(file => `
-                            <li class="file-item">
-                                <div style="display: flex; align-items: center;">
-                                    <img src="/media/${encodeURIComponent(file.path)}" 
-                                         class="file-preview" 
-                                         alt="${file.name}"
-                                         onerror="this.style.display='none'">
-                                    <div>
-                                        <a href="/media/${encodeURIComponent(file.path)}" 
-                                           class="file-link" 
-                                           target="_blank">
-                                            ${file.metadata?.title || file.name}
-                                        </a>
-                                        <div class="file-info">
-                                            ${path.basename(file.directory)}
-                                        </div>
-                                        ${file.metadata ? `
-                                            <div class="metadata">
-                                                ${file.metadata.description ? `
-                                                    <div class="metadata-item">${file.metadata.description}</div>
-                                                ` : ''}
-                                                ${file.metadata.photoTakenTime ? `
-                                                    <div class="metadata-item">
-                                                        Taken: ${file.metadata.photoTakenTime.formatted}
-                                                    </div>
-                                                ` : ''}
-                                                ${file.metadata.geoData ? `
-                                                    <div class="metadata-item geo-data">
-                                                        📍 ${file.metadata.geoData.latitude.toFixed(6)}, ${file.metadata.geoData.longitude.toFixed(6)}
-                                                    </div>
-                                                ` : ''}
-                                                ${file.metadata.deviceType ? `
-                                                    <div class="metadata-item device-info">
-                                                        📱 ${file.metadata.deviceType}
-                                                    </div>
-                                                ` : ''}
-                                            </div>
-                                        ` : ''}
-                                    </div>
-                                </div>
-                                <div class="file-date">
-                                    ${new Date(file.modified).toLocaleString()}
-                                </div>
-                            </li>
-                        `).join('')}
-                    </ul>
-                </div>
-
-                <div class="section">
-                    <h2>Videos</h2>
-                    <ul class="file-list">
-                        ${groupedFiles.videos.map(file => `
-                            <li class="file-item">
-                                <div style="display: flex; align-items: center;">
-                                    <div class="video-preview">
-                                        <span>🎥</span>
-                                    </div>
-                                    <div>
-                                        <a href="/media/${encodeURIComponent(file.path)}" 
-                                           class="file-link" 
-                                           target="_blank">
-                                            ${file.metadata?.title || file.name}
-                                        </a>
-                                        <div class="file-info">
-                                            ${path.basename(file.directory)}
-                                        </div>
-                                        ${file.metadata ? `
-                                            <div class="metadata">
-                                                ${file.metadata.description ? `
-                                                    <div class="metadata-item">${file.metadata.description}</div>
-                                                ` : ''}
-                                                ${file.metadata.photoTakenTime ? `
-                                                    <div class="metadata-item">
-                                                        Taken: ${file.metadata.photoTakenTime.formatted}
-                                                    </div>
-                                                ` : ''}
-                                                ${file.metadata.geoData ? `
-                                                    <div class="metadata-item geo-data">
-                                                        📍 ${file.metadata.geoData.latitude.toFixed(6)}, ${file.metadata.geoData.longitude.toFixed(6)}
-                                                    </div>
-                                                ` : ''}
-                                                ${file.metadata.deviceType ? `
-                                                    <div class="metadata-item device-info">
-                                                        📱 ${file.metadata.deviceType}
-                                                    </div>
-                                                ` : ''}
-                                            </div>
-                                        ` : ''}
-                                    </div>
-                                </div>
-                                <div class="file-date">
-                                    ${new Date(file.modified).toLocaleString()}
-                                </div>
-                            </li>
-                        `).join('')}
-                    </ul>
-                </div>
-
-                ${paginationControls}
+                <script nonce="${nonce}" src="/js/media-viewer.js"></script>
             </body>
             </html>
         `;
 
         res.send(html);
     } catch (error) {
+        console.error('Error fetching media overview:', error);
         res.status(500).json({
-            error: 'Failed to load media files',
+            error: 'Failed to fetch media overview',
             message: error.message
         });
     }
 });
 
-function generateActiveFilters(filters) {
-    const activeFilters = [];
-    
-    if (filters.search) {
-        activeFilters.push(`
-            <div class="filter-tag">
-                Search: ${filters.search}
-                <button onclick="removeFilter('search')">×</button>
-            </div>
-        `);
-    }
-    
-    if (filters.type) {
-        activeFilters.push(`
-            <div class="filter-tag">
-                Type: ${filters.type}
-                <button onclick="removeFilter('type')">×</button>
-            </div>
-        `);
-    }
-    
-    if (filters.dateFrom) {
-        activeFilters.push(`
-            <div class="filter-tag">
-                From: ${new Date(filters.dateFrom).toLocaleDateString()}
-                <button onclick="removeFilter('dateFrom')">×</button>
-            </div>
-        `);
-    }
-    
-    if (filters.dateTo) {
-        activeFilters.push(`
-            <div class="filter-tag">
-                To: ${new Date(filters.dateTo).toLocaleDateString()}
-                <button onclick="removeFilter('dateTo')">×</button>
-            </div>
-        `);
-    }
-    
-    if (filters.hasLocation) {
-        activeFilters.push(`
-            <div class="filter-tag">
-                With Location
-                <button onclick="removeFilter('hasLocation')">×</button>
-            </div>
-        `);
-    }
-
-    if (activeFilters.length === 0) {
-        return '';
-    }
-
-    return `
-        <div class="active-filters">
-            <strong>Active Filters:</strong>
-            ${activeFilters.join('')}
-        </div>
-        <script>
-            function removeFilter(filter) {
-                const url = new URL(window.location.href);
-                url.searchParams.delete(filter);
-                window.location.href = url.toString();
-            }
-        </script>
-    `;
-}
-
-function generatePaginationControls(currentPage, totalPages, itemsPerPage, filters) {
-    const controls = [];
-    const maxVisiblePages = 5;
-    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
-    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
-
-    if (endPage - startPage + 1 < maxVisiblePages) {
-        startPage = Math.max(1, endPage - maxVisiblePages + 1);
-    }
-
-    // Build query string with current filters
-    const queryString = Object.entries(filters)
-        .filter(([_, value]) => value)
-        .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
-        .join('&');
-
-    // Previous page
-    controls.push(`
-        <a href="/?page=${currentPage - 1}&itemsPerPage=${itemsPerPage}${queryString ? '&' + queryString : ''}" 
-           class="${currentPage === 1 ? 'disabled' : ''}">
-            Previous
-        </a>
-    `);
-
-    // First page
-    if (startPage > 1) {
-        controls.push(`
-            <a href="/?page=1&itemsPerPage=${itemsPerPage}${queryString ? '&' + queryString : ''}">1</a>
-            ${startPage > 2 ? '<span>...</span>' : ''}
-        `);
-    }
-
-    // Page numbers
-    for (let i = startPage; i <= endPage; i++) {
-        controls.push(`
-            <a href="/?page=${i}&itemsPerPage=${itemsPerPage}${queryString ? '&' + queryString : ''}" 
-               class="${i === currentPage ? 'active' : ''}">
-                ${i}
-            </a>
-        `);
-    }
-
-    // Last page
-    if (endPage < totalPages) {
-        controls.push(`
-            ${endPage < totalPages - 1 ? '<span>...</span>' : ''}
-            <a href="/?page=${totalPages}&itemsPerPage=${itemsPerPage}${queryString ? '&' + queryString : ''}">${totalPages}</a>
-        `);
-    }
-
-    // Next page
-    controls.push(`
-        <a href="/?page=${currentPage + 1}&itemsPerPage=${itemsPerPage}${queryString ? '&' + queryString : ''}" 
-           class="${currentPage === totalPages ? 'disabled' : ''}">
-            Next
-        </a>
-    `);
-
-    return `
-        <div class="pagination">
-            ${controls.join('')}
-        </div>
-    `;
+// Helper function to format file sizes
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 module.exports = router; 
