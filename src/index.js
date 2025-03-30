@@ -3,6 +3,8 @@ const cors = require('cors');
 const compression = require('compression');
 const helmet = require('helmet');
 const path = require('path');
+const https = require('https');
+const fs = require('fs');
 const config = require('./config/config');
 const mediaRoutes = require('./routes/mediaRoutes');
 const indexRoutes = require('./routes/index');
@@ -12,8 +14,25 @@ const mediaService = require('./services/mediaService');
 // Initialize express app
 const app = express();
 
+// Security headers configuration
+app.use(helmet({
+    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "blob:"],
+            mediaSrc: ["'self'", "data:", "blob:"],
+            connectSrc: ["'self'"],
+            frameAncestors: ["'none'"]
+        }
+    }
+}));
+
 // Middleware
-app.use(helmet()); // Security headers
 app.use(compression()); // Compress responses
 app.use(express.json()); // Parse JSON bodies
 app.use(express.static(path.join(__dirname, '../public'))); // Serve static files
@@ -23,7 +42,9 @@ if (config.corsEnabled) {
     app.use(cors({
         origin: config.corsOrigins,
         methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization']
+        allowedHeaders: ['Content-Type', 'Authorization'],
+        credentials: true,
+        maxAge: 86400 // 24 hours
     }));
 }
 
@@ -56,9 +77,18 @@ async function startServer() {
         await mediaService.initialize();
         console.log('Media service initialized successfully');
 
+        // SSL configuration
+        const sslOptions = {
+            key: fs.readFileSync(config.sslKeyPath),
+            cert: fs.readFileSync(config.sslCertPath)
+        };
+
+        // Create HTTPS server
+        const server = https.createServer(sslOptions, app);
+        
         // Start server
-        const server = app.listen(config.port, config.host, () => {
-            console.log(`Server running at http://${config.host}:${config.port}`);
+        server.listen(config.port, config.host, () => {
+            console.log(`HTTPS Server running at https://${config.host}:${config.port}`);
             console.log(`Media directories: ${config.mediaDirectories.join(', ')}`);
         });
     } catch (error) {

@@ -5,6 +5,10 @@ module.exports = {
     port: process.env.PORT || 3000,
     host: process.env.HOST || '0.0.0.0',
 
+    // SSL configuration
+    sslKeyPath: process.env.SSL_KEY_PATH || '/etc/ssl/media-viewer/privkey.pem',
+    sslCertPath: process.env.SSL_CERT_PATH || '/etc/ssl/media-viewer/fullchain.pem',
+
     // Media directories to scan
     mediaDirectories: [
         process.env.MEDIA_DIR || '/home/pi/Media'
@@ -20,7 +24,7 @@ module.exports = {
 
     // Security settings
     corsEnabled: true,
-    corsOrigins: ['*'], // Allow all origins in development
+    corsOrigins: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000', 'https://localhost:3000'],
 
     // Performance settings
     maxFileSize: 100 * 1024 * 1024, // 100MB
