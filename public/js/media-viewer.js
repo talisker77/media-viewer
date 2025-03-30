@@ -6,6 +6,10 @@ let currentMediaIndex = 0;
 let mediaItems = [];
 let keyboardShortcutsTimeout;
 let currentMediaElement = null;
+let retryCount = 0;
+const MAX_RETRIES = 3;
+const ITEMS_PER_PAGE = 20;
+const SCROLL_THRESHOLD = 1000; // pixels from bottom to trigger load
 
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 Bytes';
@@ -46,9 +50,9 @@ function createMediaItem(item) {
     const mediaItem = document.createElement('div');
     mediaItem.className = 'media-item';
     mediaItem.dataset.type = item.type;
-    mediaItem.dataset.date = item.date;
+    mediaItem.dataset.date = item.modified;
     mediaItem.dataset.size = item.size;
-    mediaItem.dataset.hasLocation = item.hasLocation;
+    mediaItem.dataset.hasLocation = item.metadata?.geoData ? true : false;
 
     // Use the folder information from the server
     const folderName = item.folder || 'Root';
@@ -58,9 +62,9 @@ function createMediaItem(item) {
             <div class="media-name" data-path="${item.path}">${item.name}</div>
             <div class="media-folder" title="${item.directory}">${folderName}</div>
             <div class="media-meta">
-                <span class="media-date">${formatDate(item.date)}</span>
+                <span class="media-date">${formatDate(item.modified)}</span>
                 <span class="media-size">${formatFileSize(item.size)}</span>
-                ${item.hasLocation ? '<span class="media-location">📍</span>' : ''}
+                ${item.metadata?.geoData ? '<span class="media-location">📍</span>' : ''}
             </div>
         </div>
     `;
@@ -124,8 +128,8 @@ function showMediaViewer(item) {
     // Update UI
     modalTitle.textContent = item.name;
     modalMeta.innerHTML = `
-        ${item.folder} • ${formatFileSize(item.size)} • ${formatDate(item.date)}
-        ${item.hasLocation ? ' • 📍' : ''}
+        ${item.folder} • ${formatFileSize(item.size)} • ${formatDate(item.modified)}
+        ${item.metadata?.geoData ? ' • 📍' : ''}
     `;
     
     // Clear container and show loading spinner
@@ -149,7 +153,7 @@ function showMediaViewer(item) {
     }
     
     // Load media
-    const mediaUrl = `/media/${encodeURIComponent(item.path)}`;
+    const mediaUrl = `/api/media/file/${encodeURIComponent(item.path)}`;
     console.log('Loading media from URL:', mediaUrl);
     
     currentMediaElement.onload = () => {
@@ -192,7 +196,7 @@ function updateNavigationButtons() {
     const nextButton = document.getElementById('nextButton');
     
     prevButton.disabled = currentMediaIndex === 0;
-    nextButton.disabled = currentMediaIndex === mediaItems.length - 1;
+    nextButton.disabled = currentMediaIndex === mediaItems.length - 1 && !hasMore;
 }
 
 function navigateMedia(direction) {
@@ -200,6 +204,15 @@ function navigateMedia(direction) {
     if (newIndex >= 0 && newIndex < mediaItems.length) {
         currentMediaIndex = newIndex;
         showMediaViewer(mediaItems[currentMediaIndex]);
+    } else if (direction > 0 && hasMore) {
+        // If we're at the end and there are more items, load them
+        loadMediaItems().then(() => {
+            // After loading, try to navigate again
+            if (newIndex < mediaItems.length) {
+                currentMediaIndex = newIndex;
+                showMediaViewer(mediaItems[currentMediaIndex]);
+            }
+        });
     }
 }
 
@@ -220,6 +233,42 @@ function closeMediaViewer() {
     }
 }
 
+// Add pagination info display
+function updatePaginationInfo(data) {
+    const paginationInfo = document.getElementById('paginationInfo');
+    if (paginationInfo) {
+        const start = ((data.currentPage - 1) * data.itemsPerPage) + 1;
+        const end = Math.min(data.currentPage * data.itemsPerPage, data.totalItems);
+        paginationInfo.textContent = `Showing ${start} to ${end} of ${data.totalItems} items`;
+    }
+}
+
+function updateFilters() {
+    // Only include non-empty filters
+    filters = {};
+    const search = document.getElementById('search').value;
+    const type = document.getElementById('type').value;
+    const dateFrom = document.getElementById('dateFrom').value;
+    const dateTo = document.getElementById('dateTo').value;
+    const hasLocation = document.getElementById('hasLocation').checked;
+
+    if (search) filters.search = search;
+    if (type) filters.type = type;
+    if (dateFrom) filters.dateFrom = dateFrom;
+    if (dateTo) filters.dateTo = dateTo;
+    if (hasLocation) filters.hasLocation = hasLocation;
+
+    console.log('Updating filters:', filters);
+
+    // Reset pagination
+    currentPage = 1;
+    hasMore = true;
+    retryCount = 0;
+    mediaItems = [];
+    document.getElementById('mediaList').innerHTML = '';
+    loadMediaItems();
+}
+
 async function loadMediaItems() {
     if (isLoading || !hasMore) return;
     
@@ -227,116 +276,139 @@ async function loadMediaItems() {
     document.getElementById('loading').style.display = 'block';
 
     try {
-        const params = new URLSearchParams({
-            page: currentPage,
-            itemsPerPage: 20,
-            ...filters
+        // Build query parameters
+        const params = new URLSearchParams();
+        params.append('page', currentPage);
+        params.append('itemsPerPage', ITEMS_PER_PAGE);
+
+        // Add filters
+        Object.entries(filters).forEach(([key, value]) => {
+            if (value !== undefined && value !== '') {
+                params.append(key, value);
+            }
         });
 
         console.log('Fetching media items with params:', params.toString());
         const response = await fetch(`/api/media?${params}`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const data = await response.json();
         console.log('Received media data:', {
             totalItems: data.totalItems,
             currentPage: data.currentPage,
             totalPages: data.totalPages,
-            itemsCount: data.items.length
+            itemsCount: data.items.length,
+            hasMore: data.hasMore
         });
 
         const mediaList = document.getElementById('mediaList');
-        // Append each media item directly to the list
+        
+        // Create a document fragment for better performance
+        const fragment = document.createDocumentFragment();
+        
+        // Append each media item to the fragment
         data.items.forEach(item => {
             const mediaItem = createMediaItem(item);
-            mediaList.appendChild(mediaItem);
+            fragment.appendChild(mediaItem);
         });
+        
+        // Append the fragment to the list
+        mediaList.appendChild(fragment);
 
         // Store the items in our global array
-        mediaItems = [...mediaItems, ...data.items];
-        console.log('Updated mediaItems array:', {
-            totalItems: mediaItems.length,
-            lastLoadedPage: currentPage
-        });
+        if (currentPage === 1) {
+            mediaItems = data.items;
+        } else {
+            mediaItems = [...mediaItems, ...data.items];
+        }
 
-        hasMore = currentPage < data.totalPages;
-        currentPage++;
+        // Update pagination info
+        updatePaginationInfo(data);
+
+        // Update hasMore flag based on whether there are more pages
+        hasMore = data.hasMore;
+        currentPage = data.currentPage + 1;
+        retryCount = 0; // Reset retry count on successful load
+
+        console.log('Updated state:', {
+            currentPage,
+            hasMore,
+            totalItems: mediaItems.length
+        });
     } catch (error) {
         console.error('Error loading media items:', error);
+        
+        // Implement retry logic
+        if (retryCount < MAX_RETRIES) {
+            retryCount++;
+            console.log(`Retrying load (attempt ${retryCount}/${MAX_RETRIES})...`);
+            setTimeout(loadMediaItems, 1000 * retryCount); // Exponential backoff
+        } else {
+            // Show error message to user
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.textContent = 'Failed to load more items. Please try refreshing the page.';
+            document.getElementById('mediaList').appendChild(errorDiv);
+        }
     } finally {
         isLoading = false;
         document.getElementById('loading').style.display = 'none';
     }
 }
 
-function updateFilters() {
-    filters = {
-        search: document.getElementById('search').value,
-        type: document.getElementById('type').value,
-        dateFrom: document.getElementById('dateFrom').value,
-        dateTo: document.getElementById('dateTo').value,
-        hasLocation: document.getElementById('hasLocation').checked
-    };
-
-    // Reset pagination
-    currentPage = 1;
-    hasMore = true;
-    document.getElementById('mediaList').innerHTML = '';
-    loadMediaItems();
-}
-
-// Debounce helper
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
-
-// Initialize the application
+// Event listeners
 document.addEventListener('DOMContentLoaded', () => {
-    // Event listeners
-    document.getElementById('search').addEventListener('input', debounce(updateFilters, 300));
-    document.getElementById('type').addEventListener('change', updateFilters);
-    document.getElementById('dateFrom').addEventListener('change', updateFilters);
-    document.getElementById('dateTo').addEventListener('change', updateFilters);
-    document.getElementById('hasLocation').addEventListener('change', updateFilters);
+    // Create modal elements first
+    const modal = createModal();
+    
+    // Filter event listeners
+    const searchInput = document.getElementById('search');
+    const typeSelect = document.getElementById('type');
+    const dateFromInput = document.getElementById('dateFrom');
+    const dateToInput = document.getElementById('dateTo');
+    const hasLocationCheckbox = document.getElementById('hasLocation');
+    const prevButton = document.getElementById('prevButton');
+    const nextButton = document.getElementById('nextButton');
 
-    // Media viewer event listeners
-    document.addEventListener('click', (e) => {
-        const mediaName = e.target.closest('.media-name');
-        if (mediaName) {
-            e.preventDefault();
-            const path = mediaName.dataset.path;
-            console.log('Media item clicked:', path);
-            
-            // Find the item in our global mediaItems array
-            const mediaItem = mediaItems.find(item => item.path === path);
-            if (mediaItem) {
-                console.log('Found media item:', mediaItem);
-                showMediaViewer(mediaItem);
-            } else {
-                console.error('Media item not found in array:', path);
-                console.log('Available items:', mediaItems);
-            }
-        }
-    });
+    if (searchInput) {
+        searchInput.addEventListener('input', debounce(updateFilters, 300));
+    }
+    if (typeSelect) {
+        typeSelect.addEventListener('change', updateFilters);
+    }
+    if (dateFromInput) {
+        dateFromInput.addEventListener('change', updateFilters);
+    }
+    if (dateToInput) {
+        dateToInput.addEventListener('change', updateFilters);
+    }
+    if (hasLocationCheckbox) {
+        hasLocationCheckbox.addEventListener('change', updateFilters);
+    }
 
-    // Modal controls
-    document.addEventListener('click', (e) => {
-        if (e.target.classList.contains('modal-close')) {
+    // Modal close button
+    const modalClose = modal.querySelector('.modal-close');
+    if (modalClose) {
+        modalClose.addEventListener('click', closeMediaViewer);
+    }
+
+    // Modal background click
+    modal.addEventListener('click', (e) => {
+        if (e.target.classList.contains('modal')) {
             closeMediaViewer();
         }
-        if (e.target.id === 'prevButton') {
-            navigateMedia(-1);
-        }
-        if (e.target.id === 'nextButton') {
-            navigateMedia(1);
-        }
     });
+
+    // Navigation buttons
+    if (prevButton) {
+        prevButton.addEventListener('click', () => navigateMedia(-1));
+    }
+    if (nextButton) {
+        nextButton.addEventListener('click', () => navigateMedia(1));
+    }
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
@@ -356,13 +428,38 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Infinite scroll
+    // Infinite scroll with improved detection
+    let scrollTimeout;
     window.addEventListener('scroll', () => {
-        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 1000) {
-            loadMediaItems();
+        if (scrollTimeout) {
+            clearTimeout(scrollTimeout);
         }
+        
+        scrollTimeout = setTimeout(() => {
+            const scrollPosition = window.innerHeight + window.scrollY;
+            const documentHeight = document.body.offsetHeight;
+            const scrollThreshold = 500; // Reduced threshold for earlier loading
+            
+            if (documentHeight - scrollPosition <= scrollThreshold && !isLoading && hasMore) {
+                console.log('Scroll threshold reached, loading more items');
+                loadMediaItems();
+            }
+        }, 100);
     });
 
     // Initial load
     loadMediaItems();
-}); 
+});
+
+// Debounce helper function
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+} 

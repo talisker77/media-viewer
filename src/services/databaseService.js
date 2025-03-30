@@ -123,7 +123,12 @@ class DatabaseService {
             params.push('%"geoData":%');
         }
 
-        // Get total count
+        if (filters.path) {
+            query += ' AND path = ?';
+            params.push(filters.path);
+        }
+
+        // Get total count using a separate optimized query
         const countQuery = `SELECT COUNT(*) as total FROM (${query})`;
         const total = await new Promise((resolve, reject) => {
             this.db.get(countQuery, params, (err, row) => {
@@ -132,7 +137,7 @@ class DatabaseService {
             });
         });
 
-        // Get paginated results
+        // Get paginated results with optimized query
         query += ' ORDER BY modified DESC LIMIT ? OFFSET ?';
         params.push(itemsPerPage, offset);
 
@@ -153,7 +158,8 @@ class DatabaseService {
             totalItems: total,
             totalPages: Math.ceil(total / itemsPerPage),
             currentPage: page,
-            itemsPerPage
+            itemsPerPage,
+            hasMore: offset + itemsPerPage < total
         };
     }
 

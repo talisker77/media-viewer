@@ -6,6 +6,8 @@ const path = require('path');
 const config = require('./config/config');
 const mediaRoutes = require('./routes/mediaRoutes');
 const indexRoutes = require('./routes/index');
+const databaseService = require('./services/databaseService');
+const mediaService = require('./services/mediaService');
 
 // Initialize express app
 const app = express();
@@ -27,7 +29,7 @@ if (config.corsEnabled) {
 
 // Routes
 app.use('/', indexRoutes);
-app.use('/api/media', mediaRoutes);
+app.use('/api/media', mediaRoutes); // Updated to use /api/media prefix
 
 // Basic health check route
 app.get('/health', (req, res) => {
@@ -43,8 +45,26 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Start server
-const server = app.listen(config.port, config.host, () => {
-    console.log(`Server running at http://${config.host}:${config.port}`);
-    console.log(`Media directories: ${config.mediaDirectories.join(', ')}`);
-}); 
+// Initialize services and start server
+async function startServer() {
+    try {
+        // Initialize database
+        await databaseService.initialize();
+        console.log('Database initialized successfully');
+
+        // Initialize media service (this will scan directories and populate the database)
+        await mediaService.initialize();
+        console.log('Media service initialized successfully');
+
+        // Start server
+        const server = app.listen(config.port, config.host, () => {
+            console.log(`Server running at http://${config.host}:${config.port}`);
+            console.log(`Media directories: ${config.mediaDirectories.join(', ')}`);
+        });
+    } catch (error) {
+        console.error('Failed to start server:', error);
+        process.exit(1);
+    }
+}
+
+startServer(); 

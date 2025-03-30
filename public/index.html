@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Viewer</title>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Media Viewer</h1>
+            <div class="filters">
+                <input type="text" id="search" placeholder="Search media...">
+                <select id="type">
+                    <option value="">All Types</option>
+                    <option value="image">Images</option>
+                    <option value="video">Videos</option>
+                </select>
+                <input type="date" id="dateFrom" placeholder="From Date">
+                <input type="date" id="dateTo" placeholder="To Date">
+                <label>
+                    <input type="checkbox" id="hasLocation"> Has Location
+                </label>
+            </div>
+        </header>
+
+        <main>
+            <div id="paginationInfo" class="pagination-info"></div>
+            <div id="mediaList" class="media-grid"></div>
+            <div id="loading" class="loading-spinner" style="display: none;">Loading...</div>
+        </main>
+    </div>
+
+    <script src="/js/media-viewer.js"></script>
+</body>
+</html> 

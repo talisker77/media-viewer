@@ -30,10 +30,17 @@ router.get('/media/:filePath(*)', async (req, res) => {
             });
         }
 
-        // First check if the file exists in our database
-        console.log(`[${requestId}] Loading media files from database`);
-        const mediaData = await databaseService.loadMediaFiles();
-        const file = mediaData.items.find(f => f.path === filePath);
+        // Query the database for the specific file
+        const file = await new Promise((resolve, reject) => {
+            databaseService.db.get(
+                'SELECT * FROM media_files WHERE path = ?',
+                [filePath],
+                (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row);
+                }
+            );
+        });
 
         if (!file) {
             console.error(`[${requestId}] File not found in database:`, filePath);
@@ -42,6 +49,9 @@ router.get('/media/:filePath(*)', async (req, res) => {
                 requestId
             });
         }
+
+        // Parse metadata
+        file.metadata = JSON.parse(file.metadata || '{}');
 
         console.log(`[${requestId}] Found file in database:`, {
             name: file.name,
@@ -176,71 +186,40 @@ router.get('/api/media', async (req, res) => {
             hasLocation
         });
 
-        const mediaData = await databaseService.loadMediaFiles();
-        let items = mediaData.items;
+        // Pass all parameters to databaseService
+        const mediaData = await databaseService.loadMediaFiles(page, itemsPerPage, {
+            search,
+            type,
+            dateFrom,
+            dateTo,
+            hasLocation
+        });
 
-        // Apply filters
-        if (search) {
-            const searchLower = search.toLowerCase();
-            items = items.filter(item => 
-                item.name.toLowerCase().includes(searchLower) ||
-                item.path.toLowerCase().includes(searchLower)
-            );
-        }
-
-        if (type) {
-            items = items.filter(item => item.type === type);
-        }
-
-        if (dateFrom) {
-            items = items.filter(item => new Date(item.date) >= dateFrom);
-        }
-
-        if (dateTo) {
-            items = items.filter(item => new Date(item.date) <= dateTo);
-        }
-
-        if (hasLocation) {
-            items = items.filter(item => item.hasLocation);
-        }
-
-        // Calculate pagination
-        const totalItems = items.length;
-        const totalPages = Math.ceil(totalItems / itemsPerPage);
-        const startIndex = (page - 1) * itemsPerPage;
-        const endIndex = startIndex + itemsPerPage;
-        const paginatedItems = items.slice(startIndex, endIndex);
-
-        // Add folder information to each item and ensure date is a valid timestamp
-        const itemsWithFolder = paginatedItems.map(item => {
-            // Get the directory path (everything except the filename)
+        // Add folder information to each item
+        const itemsWithFolder = mediaData.items.map(item => {
             const dirPath = path.dirname(item.path);
-            // Get the last directory name
             const folderName = path.basename(dirPath);
-            
-            // Ensure date is a valid timestamp
-            const date = new Date(item.date).getTime();
             
             return {
                 ...item,
                 folder: folderName || 'Root',
-                directory: dirPath,
-                date: date // Use timestamp instead of Date object
+                directory: dirPath
             };
         });
 
         console.log('Sending response:', {
-            totalItems,
-            currentPage: page,
-            totalPages,
+            totalItems: mediaData.totalItems,
+            currentPage: mediaData.currentPage,
+            totalPages: mediaData.totalPages,
             itemsCount: itemsWithFolder.length
         });
 
         res.json({
-            totalItems,
-            currentPage: page,
-            totalPages,
-            items: itemsWithFolder
+            totalItems: mediaData.totalItems,
+            currentPage: mediaData.currentPage,
+            totalPages: mediaData.totalPages,
+            items: itemsWithFolder,
+            hasMore: mediaData.hasMore
         });
     } catch (error) {
         console.error('Error in /api/media:', error);
@@ -327,6 +306,7 @@ router.get('/', async (req, res) => {
                         </label>
                     </div>
 
+                    <div id="paginationInfo" class="pagination-info"></div>
                     <div class="media-list" id="mediaList">
                         <!-- Media items will be loaded here -->
                     </div>
