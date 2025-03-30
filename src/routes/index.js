@@ -116,28 +116,88 @@ router.get('/media/:filePath(*)', async (req, res) => {
             // Add cache control headers
             res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
             res.setHeader('ETag', `"${stats.size}-${stats.mtime.getTime()}"`);
-            
-            // Stream the file with error handling
-            const fileStream = fs.createReadStream(absolutePath);
-            
-            fileStream.on('error', (error) => {
-                console.error(`[${requestId}] Error streaming file:`, error);
-                if (!res.headersSent) {
-                    res.status(500).json({
-                        error: 'Error streaming file',
+
+            // Handle range requests for video streaming
+            const range = req.headers.range;
+            if (range) {
+                const parts = range.replace(/bytes=/, "").split("-");
+                const start = parseInt(parts[0], 10);
+                const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+                const chunksize = (end - start) + 1;
+
+                // Validate range request
+                if (start >= stats.size || end >= stats.size) {
+                    return res.status(416).json({
+                        error: 'Range not satisfiable',
                         requestId
                     });
                 }
-            });
 
-            fileStream.pipe(res);
+                // Set streaming headers
+                const head = {
+                    'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+                    'Accept-Ranges': 'bytes',
+                    'Content-Length': chunksize,
+                    'Content-Type': mimeType,
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive'
+                };
+                
+                res.writeHead(206, head);
+                
+                // Create read stream with optimized settings
+                const file = fs.createReadStream(absolutePath, {
+                    start,
+                    end,
+                    highWaterMark: 64 * 1024, // 64KB chunks for better memory management
+                    autoClose: true
+                });
+                
+                file.on('error', (error) => {
+                    console.error(`[${requestId}] Error streaming file chunk:`, error);
+                    if (!res.headersSent) {
+                        res.status(500).json({
+                            error: 'Error streaming file chunk',
+                            requestId
+                        });
+                    }
+                });
+
+                // Handle client disconnect
+                req.on('close', () => {
+                    console.log(`[${requestId}] Client disconnected, cleaning up`);
+                    file.destroy();
+                });
+
+                // Pipe with error handling
+                file.pipe(res, { end: true });
+            } else {
+                // For non-range requests, stream the entire file with optimized settings
+                const fileStream = fs.createReadStream(absolutePath, {
+                    highWaterMark: 64 * 1024, // 64KB chunks
+                    autoClose: true
+                });
+                
+                fileStream.on('error', (error) => {
+                    console.error(`[${requestId}] Error streaming file:`, error);
+                    if (!res.headersSent) {
+                        res.status(500).json({
+                            error: 'Error streaming file',
+                            requestId
+                        });
+                    }
+                });
+
+                // Handle client disconnect
+                req.on('close', () => {
+                    console.log(`[${requestId}] Client disconnected, cleaning up`);
+                    fileStream.destroy();
+                });
+
+                // Pipe with error handling
+                fileStream.pipe(res, { end: true });
+            }
             
-            // Handle client disconnect
-            req.on('close', () => {
-                console.log(`[${requestId}] Client disconnected, cleaning up`);
-                fileStream.destroy();
-            });
-
         } catch (error) {
             console.error(`[${requestId}] File not found on disk:`, {
                 path: absolutePath,

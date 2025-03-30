@@ -141,6 +141,7 @@ function showMediaViewer(item) {
         if (currentMediaElement instanceof HTMLVideoElement) {
             currentMediaElement.pause();
             currentMediaElement.src = '';
+            currentMediaElement.load(); // Force cleanup of video resources
         }
         currentMediaElement.remove();
         currentMediaElement = null;
@@ -152,11 +153,23 @@ function showMediaViewer(item) {
         const videoContainer = document.createElement('div');
         videoContainer.className = 'video-container';
         
-        // Create video element
+        // Create video element with optimized settings
         currentMediaElement = document.createElement('video');
         currentMediaElement.className = 'media-viewer video';
         currentMediaElement.controls = true;
         currentMediaElement.playsInline = true;
+        currentMediaElement.preload = 'metadata'; // Only load metadata initially
+        
+        // Add loading progress indicator
+        const loadingProgress = document.createElement('div');
+        loadingProgress.className = 'loading-progress';
+        loadingProgress.innerHTML = `
+            <div class="progress-bar">
+                <div class="progress"></div>
+            </div>
+            <div class="progress-text">Loading video...</div>
+        `;
+        videoContainer.appendChild(loadingProgress);
         
         // Add video controls
         const controls = document.createElement('div');
@@ -192,12 +205,63 @@ function showMediaViewer(item) {
         
         currentMediaElement.addEventListener('loadedmetadata', () => {
             controls.querySelector('.duration').textContent = formatTime(currentMediaElement.duration);
+            loadingProgress.style.display = 'none';
+            loadingSpinner.style.display = 'none';
+        });
+
+        // Add progress tracking for initial load
+        currentMediaElement.addEventListener('progress', () => {
+            if (currentMediaElement.buffered.length > 0) {
+                const bufferedEnd = currentMediaElement.buffered.end(currentMediaElement.buffered.length - 1);
+                const duration = currentMediaElement.duration;
+                const progress = (bufferedEnd / duration) * 100;
+                loadingProgress.querySelector('.progress').style.width = `${progress}%`;
+                loadingProgress.querySelector('.progress-text').textContent = 
+                    `Loading video... ${Math.round(progress)}%`;
+            }
+        });
+
+        // Add error handling with detailed error messages
+        currentMediaElement.addEventListener('error', (e) => {
+            console.error('Video loading error:', e);
+            loadingProgress.style.display = 'none';
+            loadingSpinner.style.display = 'none';
+            
+            let errorMessage = 'Error loading video file';
+            switch (currentMediaElement.error.code) {
+                case 1:
+                    errorMessage = 'Video loading aborted';
+                    break;
+                case 2:
+                    errorMessage = 'Network error while loading video';
+                    break;
+                case 3:
+                    errorMessage = 'Video decoding failed';
+                    break;
+                case 4:
+                    errorMessage = 'Video source not supported';
+                    break;
+                default:
+                    errorMessage = 'Unknown error loading video';
+            }
+            
+            mediaContainer.innerHTML = `
+                <div class="error-message">
+                    <p>${errorMessage}</p>
+                    <p>Path: ${item.path}</p>
+                    <p>Size: ${formatFileSize(item.size)}</p>
+                    <p>Please check if the file exists and is accessible</p>
+                    <button onclick="retryLoadMedia()">Retry</button>
+                </div>
+            `;
         });
         
         // Add control button event listeners
         controls.querySelector('.play-pause').addEventListener('click', () => {
             if (currentMediaElement.paused) {
-                currentMediaElement.play();
+                currentMediaElement.play().catch(error => {
+                    console.error('Error playing video:', error);
+                });
             } else {
                 currentMediaElement.pause();
             }
@@ -235,25 +299,54 @@ function showMediaViewer(item) {
         mediaContainer.appendChild(currentMediaElement);
     }
     
-    // Load media
+    // Load media with retry mechanism and timeout
     const mediaUrl = `/api/media/file/${encodeURIComponent(item.path)}`;
     console.log('Loading media from URL:', mediaUrl);
     
+    // Set a timeout for large files
+    const loadTimeout = setTimeout(() => {
+        if (loadingSpinner.style.display === 'block') {
+            console.warn('Media load timeout reached');
+            loadingSpinner.style.display = 'none';
+            mediaContainer.innerHTML = `
+                <div class="error-message">
+                    <p>Loading timeout - File might be too large</p>
+                    <p>Path: ${item.path}</p>
+                    <p>Size: ${formatFileSize(item.size)}</p>
+                    <p>Please try again or contact support</p>
+                    <button onclick="retryLoadMedia()">Retry</button>
+                </div>
+            `;
+        }
+    }, 30000); // 30 second timeout
+    
     currentMediaElement.onload = () => {
+        clearTimeout(loadTimeout);
         console.log('Media loaded successfully');
         loadingSpinner.style.display = 'none';
     };
 
     currentMediaElement.onerror = (error) => {
+        clearTimeout(loadTimeout);
         console.error('Error loading media:', error);
-        loadingSpinner.style.display = 'none';
-        mediaContainer.innerHTML = `
-            <div style="color: white; text-align: center;">
-                <p>Error loading media file</p>
-                <p>Path: ${item.path}</p>
-                <p>Please check if the file exists and is accessible</p>
-            </div>
-        `;
+        if (retryCount < MAX_RETRIES) {
+            retryCount++;
+            console.log(`Retrying media load (attempt ${retryCount}/${MAX_RETRIES})...`);
+            setTimeout(() => {
+                currentMediaElement.src = mediaUrl;
+            }, 1000 * retryCount); // Exponential backoff
+        } else {
+            loadingSpinner.style.display = 'none';
+            mediaContainer.innerHTML = `
+                <div class="error-message">
+                    <p>Error loading media file</p>
+                    <p>Path: ${item.path}</p>
+                    <p>Size: ${formatFileSize(item.size)}</p>
+                    <p>Please check if the file exists and is accessible</p>
+                    <button onclick="retryLoadMedia()">Retry</button>
+                </div>
+            `;
+        }
     };
     
     currentMediaElement.src = mediaUrl;
@@ -552,4 +645,13 @@ function formatTime(seconds) {
     const minutes = Math.floor(seconds / 60);
     seconds = Math.floor(seconds % 60);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-} 
+}
+
+// Add retry function for media loading
+function retryLoadMedia() {
+    retryCount = 0;
+    const currentItem = mediaItems[currentMediaIndex];
+    if (currentItem) {
+        showMediaViewer(currentItem);
+    }
+}

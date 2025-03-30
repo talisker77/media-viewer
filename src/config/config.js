@@ -1,17 +1,21 @@
 require('dotenv').config();
 
+// Determine the base path based on the platform
+const basePath = process.platform === 'win32' ? 'C:\\etc' : '/etc';
+
 module.exports = {
     // Server configuration
     port: process.env.PORT || 3000,
     host: process.env.HOST || '0.0.0.0',
 
     // SSL configuration
-    sslKeyPath: process.env.SSL_KEY_PATH || '/etc/ssl/media-viewer/privkey.pem',
-    sslCertPath: process.env.SSL_CERT_PATH || '/etc/ssl/media-viewer/fullchain.pem',
+    sslKeyPath: process.env.SSL_KEY_PATH || `${basePath}\\ssl\\media-viewer\\cert.pfx`,
+    sslCertPath: process.env.SSL_CERT_PATH || `${basePath}\\ssl\\media-viewer\\cert.pfx`,
+    sslCertPassword: process.env.SSL_CERT_PASSWORD || 'media-viewer',
 
     // Media directories to scan
     mediaDirectories: [
-        process.env.MEDIA_DIR || '/home/pi/Media'
+        process.env.MEDIA_DIR || (process.platform === 'win32' ? '/home/pi/Media' : '/home/pi/Media')
     ],
 
     // File type filters

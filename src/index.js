@@ -78,10 +78,21 @@ async function startServer() {
         console.log('Media service initialized successfully');
 
         // SSL configuration
-        const sslOptions = {
-            key: fs.readFileSync(config.sslKeyPath),
-            cert: fs.readFileSync(config.sslCertPath)
-        };
+        let sslOptions;
+        if (process.platform === 'win32' && config.sslKeyPath.endsWith('.pfx')) {
+            // Windows PFX certificate
+            const pfx = fs.readFileSync(config.sslKeyPath);
+            sslOptions = {
+                pfx: pfx,
+                passphrase: config.sslCertPassword
+            };
+        } else {
+            // Standard PEM certificate
+            sslOptions = {
+                key: fs.readFileSync(config.sslKeyPath),
+                cert: fs.readFileSync(config.sslCertPath)
+            };
+        }
 
         // Create HTTPS server
         const server = https.createServer(sslOptions, app);
