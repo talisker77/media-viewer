@@ -138,18 +138,101 @@ function showMediaViewer(item) {
     
     // Clean up previous media element if it exists
     if (currentMediaElement) {
+        if (currentMediaElement instanceof HTMLVideoElement) {
+            currentMediaElement.pause();
+            currentMediaElement.src = '';
+        }
         currentMediaElement.remove();
         currentMediaElement = null;
     }
     
     // Create new media element
-    currentMediaElement = item.type === 'image' 
-        ? document.createElement('img')
-        : document.createElement('video');
-    
-    currentMediaElement.className = `media-viewer ${item.type}`;
     if (item.type === 'video') {
+        // Create video container
+        const videoContainer = document.createElement('div');
+        videoContainer.className = 'video-container';
+        
+        // Create video element
+        currentMediaElement = document.createElement('video');
+        currentMediaElement.className = 'media-viewer video';
         currentMediaElement.controls = true;
+        currentMediaElement.playsInline = true;
+        
+        // Add video controls
+        const controls = document.createElement('div');
+        controls.className = 'video-controls';
+        controls.innerHTML = `
+            <button class="play-pause">▶</button>
+            <div class="progress-bar">
+                <div class="progress"></div>
+            </div>
+            <div class="time">
+                <span class="current-time">0:00</span>
+                <span>/</span>
+                <span class="duration">0:00</span>
+            </div>
+            <button class="mute">🔊</button>
+            <button class="fullscreen">⛶</button>
+        `;
+        
+        // Add event listeners for video controls
+        currentMediaElement.addEventListener('play', () => {
+            controls.querySelector('.play-pause').textContent = '⏸';
+        });
+        
+        currentMediaElement.addEventListener('pause', () => {
+            controls.querySelector('.play-pause').textContent = '▶';
+        });
+        
+        currentMediaElement.addEventListener('timeupdate', () => {
+            const progress = (currentMediaElement.currentTime / currentMediaElement.duration) * 100;
+            controls.querySelector('.progress').style.width = `${progress}%`;
+            controls.querySelector('.current-time').textContent = formatTime(currentMediaElement.currentTime);
+        });
+        
+        currentMediaElement.addEventListener('loadedmetadata', () => {
+            controls.querySelector('.duration').textContent = formatTime(currentMediaElement.duration);
+        });
+        
+        // Add control button event listeners
+        controls.querySelector('.play-pause').addEventListener('click', () => {
+            if (currentMediaElement.paused) {
+                currentMediaElement.play();
+            } else {
+                currentMediaElement.pause();
+            }
+        });
+        
+        controls.querySelector('.mute').addEventListener('click', () => {
+            currentMediaElement.muted = !currentMediaElement.muted;
+            controls.querySelector('.mute').textContent = currentMediaElement.muted ? '🔇' : '🔊';
+        });
+        
+        controls.querySelector('.fullscreen').addEventListener('click', () => {
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                videoContainer.requestFullscreen();
+            }
+        });
+        
+        // Add progress bar click handler
+        const progressBar = controls.querySelector('.progress-bar');
+        progressBar.addEventListener('click', (e) => {
+            const rect = progressBar.getBoundingClientRect();
+            const pos = (e.clientX - rect.left) / rect.width;
+            currentMediaElement.currentTime = pos * currentMediaElement.duration;
+        });
+        
+        // Assemble video container
+        videoContainer.appendChild(currentMediaElement);
+        videoContainer.appendChild(controls);
+        mediaContainer.appendChild(videoContainer);
+    } else {
+        // Create image element
+        currentMediaElement = document.createElement('img');
+        currentMediaElement.className = 'media-viewer image';
+        mediaContainer.appendChild(currentMediaElement);
     }
     
     // Load media
@@ -159,7 +242,6 @@ function showMediaViewer(item) {
     currentMediaElement.onload = () => {
         console.log('Media loaded successfully');
         loadingSpinner.style.display = 'none';
-        mediaContainer.appendChild(currentMediaElement);
     };
 
     currentMediaElement.onerror = (error) => {
@@ -462,4 +544,12 @@ function debounce(func, wait) {
         clearTimeout(timeout);
         timeout = setTimeout(later, wait);
     };
+}
+
+// Helper function to format time
+function formatTime(seconds) {
+    if (!seconds || isNaN(seconds)) return '0:00';
+    const minutes = Math.floor(seconds / 60);
+    seconds = Math.floor(seconds % 60);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 } 
